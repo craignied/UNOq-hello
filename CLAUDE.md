@@ -59,6 +59,25 @@ stop). It wraps these daemon calls:
   docker container); you only need the stream open during the build.
 - `POST /v1/apps/{id}/stop` — stop. `DELETE /v1/apps/{id}` — remove.
 - `GET  /v1/apps/{id}/logs` — SSE of the Python app's logs (or `docker logs <app>-main-1`).
+- `PATCH /v1/apps/{id}` — edit app metadata (JSON `EditRequest`: `default`, `name`, `icon`,
+  `description`, bricks). Set `{"default": true}` to make it the **boot app** (see below).
+
+### Auto-start on boot (the default app)
+
+A deployed app does **not** come back on its own after a power-cycle. Each app is a Docker
+container created with restart policy `no`, so on reboot Docker and the daemon start (both
+are systemd-`enabled`) but nothing relaunches your app — you'd have to `./run.sh` again.
+
+The daemon auto-starts exactly **one** app at boot: the one flagged `default`. Promote an
+app with `PATCH /v1/apps/{id}` and body `{"default": true}` (only one app can hold the flag;
+setting a new one clears the previous). Undo with `{"default": false}`. This flag lives in
+the daemon's app metadata, **not** on the container, so it survives `./run.sh` redeploys
+(the daemon recreates the container each deploy but keeps the default status). Prefer this
+over `docker update --restart unless-stopped <app>-main-1`, which is per-container and gets
+wiped on the next redeploy.
+
+Verify with `GET /v1/apps` — the `default` boolean on each entry. On first boot after
+flagging, the app still has to build/flash the MCU sketch, so it won't appear instantly.
 
 Avoid the `arduino-app-cli` **CLI** for running: it's locked to the `arduino` user (UID
 1000) and its `app start <path>` builds *in place* (needs a writable app dir). The daemon

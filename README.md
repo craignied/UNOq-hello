@@ -66,6 +66,21 @@ around two calls:
 > the `arduino` user *and* builds in place (needing a writable app dir). Prefer the daemon
 > API / `run.sh` — it avoids both problems.
 
+### Auto-start on boot
+
+A deployed app does **not** restart itself after you unplug/replug the board — it's a
+container created with restart policy `no`, and the daemon only auto-launches the one app
+marked as **default** at boot. To make this app come up on power-up, flag it:
+
+```bash
+curl -s -X PATCH http://127.0.0.1:8800/v1/apps/dXNlcjpoZWxsbw \
+  -H 'Content-Type: application/json' -d '{"default": true}'
+```
+
+The id `dXNlcjpoZWxsbw` is `base64("user:hello")`; `{"default": false}` undoes it. The flag
+is stored in the daemon's app metadata, so it **survives `./run.sh` redeploys**. On the
+first boot after flagging, the app still builds/flashes the MCU sketch, so give it a minute.
+
 ### What is `~/ArduinoApps`?
 
 It's the default per-user Arduino Apps workspace folder. In your home it's **empty and
@@ -110,4 +125,6 @@ More detail (Python SDK, Bricks, LED-matrix format, Docker's role) is in
 - **The Python SDK isn't on the host `pip`** — it lives inside the app's container image
   (that's what Docker is for here). Import `arduino.app_utils` / `arduino.app_bricks` from
   within the app, not from a host shell.
+- **Nothing auto-starts after a power-cycle** unless you mark the app as the board's
+  **default**. See [Auto-start on boot](#auto-start-on-boot).
 - **git/GitHub:** `gh` is authenticated over HTTPS, so `git push`/`pull` just work.

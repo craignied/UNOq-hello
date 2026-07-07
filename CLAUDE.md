@@ -35,6 +35,29 @@ active), and the SDK lives in those images. Key imports:
 On the sketch side the matching header is `#include <Arduino_RouterBridge.h>`, with
 `Bridge.begin()`, `Bridge.provide("name", fn)` to register callable providers.
 
+## Why there's Docker on this board
+
+App Lab runs each app's **Linux-side code, and every reusable "Brick", as Docker
+containers**, orchestrated with docker-compose (see the `brick_compose.yaml` files under
+`/var/lib/arduino-app-cli/assets/<ver>/compose/`). Docker is doing the heavy lifting for
+the Linux half of the system:
+
+- **Isolation & reproducibility** — each app/brick gets its own pinned environment
+  (Python + native deps) without polluting Debian or colliding with other apps. This is
+  exactly why the `arduino.app_utils` / `arduino.app_bricks` Python SDK is **not** on the
+  host `pip`: it lives *inside* those images.
+- **Heavy prebuilt stacks on demand** — Bricks like image classification, object
+  detection, ASR/TTS (whisper, piper), LLMs, and Streamlit UIs ship as prebuilt images
+  pulled from `ghcr.io/arduino/app-bricks/…`. You *compose* an app from bricks instead of
+  hand-installing gigabytes of ML dependencies on the board. Compose files declare ports,
+  volumes, and healthchecks.
+- **Lifecycle management** — the `arduino-app-cli daemon` drives the Docker API to
+  start/stop/health-check these containers. That's why the daemon (arduino user) is in the
+  `docker` group, and why `craign` needs `docker` too to touch app containers directly.
+
+Note the **MCU sketch is not containerized** — it's cross-compiled for Zephyr and flashed
+to the STM32. Docker is purely the Linux-side app/runtime layer.
+
 ## App layout (the unit you build and run)
 
 ```

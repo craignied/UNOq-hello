@@ -116,7 +116,20 @@ Study `/var/lib/arduino-app-cli/examples/led-matrix-painter/` (`sketch/sketch.in
   #3/#4 on the STM32 MCU (see `color-your-leds`). udev rule:
   `/etc/udev/rules.d/30-builtin-leds.rules`.
 
+## Git / GitHub workflow
+
+`gh` (GitHub CLI) is installed and authenticated for user `craignied` over **HTTPS**, and
+is registered as git's credential helper. So git and `gh` commands work non-interactively
+from a normal shell here (including from inside Claude Code) — **no** SSH keys and **no**
+token pasting needed.
+
+- Remote: `origin` → `https://github.com/craignied/UNOq-hello.git`. Default branch `main`.
+- Push / pull just work: `git push`, `git pull`, `git push -u origin <branch>`.
+- Use `gh` for GitHub-side operations, e.g. `gh repo view`, `gh pr create`,
+  `gh repo create` (only if the remote repo doesn't exist yet — `git push` won't create it).
+- Auth lives in `~/.config/gh/hosts.yml`; check it with `gh auth status`.
+
 ## This repo
 
-Working dir `/home/craign/hello` — currently just holds this file. Goal: an app that
+Working dir `/home/craign/hello` — holds `CLAUDE.md` and `README.md`. Goal: an app that
 scrolls **"HELLO WORLD"** across the onboard LED matrix (see the LED-matrix section above).

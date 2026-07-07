@@ -91,13 +91,56 @@ Study `/var/lib/arduino-app-cli/examples/led-matrix-painter/` (`sketch/sketch.in
 ## Running / building apps
 
 - **`arduino-app-cli`** manages apps but **must run as user `arduino` (UID 1000)** — it
-  refuses to run as any other user (including `craign`). Use `su - arduino` (needs the
-  arduino user's password) or the App Lab GUI. Apps live in `/home/arduino/ArduinoApps/`.
+  refuses to run as any other user (including `craign`) or as root. The binary is a
+  *statically linked* Go executable, so the `getuid()==1000` check can't be shimmed with
+  `LD_PRELOAD` and there's no env override. Treat the **command** as single-seat.
 - **App Lab** (`app-lab`) is a desktop GUI (Wails); it needs a graphical session (fails
   with "failed to init GTK" over a plain SSH shell). Also reachable as a web UI.
 - **`arduino-cli`** (v1.5.1) builds/uploads sketches; the MCU core is `arduino:zephyr`
   (installed under `/home/arduino/.arduino15/packages/arduino/hardware/zephyr/`).
 - Web UIs from the `web_ui` brick are served at `http://<board-ip>:7000`.
+
+### The real interface is the daemon, not the CLI (works as any local user)
+
+The CLI is just a thin client. All privileged work is done by **`arduino-app-cli daemon
+--port 8800`** (systemd unit `arduino-app-cli.service`, running as `User=1000`/arduino,
+with docker + access to `arduino-router` which owns the MCU serial link `/dev/ttyHS1`).
+It listens on **`http://127.0.0.1:8800`** and its HTTP API is reachable by **any local
+user** — the UID check lives only on the client, not the daemon. So you do **not** have to
+*be* `arduino` to drive the board. Verified endpoints (as `craign`):
+
+- `GET  /v1/version` → `{"version":"0.11.1"}`
+- `GET  /v1/apps` → JSON list; each `id` is `base64("<namespace>:<name>")`, namespaces
+  seen: `examples:`, `user:`, `local:`.
+- `GET  /v1/apps/events` → SSE stream of app state (`event: app` + JSON per app).
+- `POST /v1/apps/import?namespace=user&overwrite=true` with multipart form field
+  **`file=@app.zip`** → imports an app (returns `{"id": "..."}`, HTTP 201). **This is how
+  this repo's app got registered as `user:hello-app` — done entirely as `craign`.** After
+  import it also shows up in App Lab.
+- Lifecycle verbs `run`/`build`/`install`/`stop` are `GET /v1/apps/<verb>?id=<id>`
+  (streaming). NOTE: the exact accepted form of the `id` param for these was not yet
+  cracked — passing the stored base64 id returns `412 {"details":"invalid id"}`. TODO if
+  you want fully headless run: capture what App Lab / the arduino-user CLI actually sends
+  (e.g. tcpdump on loopback :8800, or strace the CLI as arduino).
+
+**Easiest way to actually run this app today:** open **App Lab**, pick **"Hello World
+Scroll"** (already imported), hit Run. CLI fallback: `su - arduino` then
+`arduino-app-cli run ...`.
+
+### Using your own user (`craign`) for board projects
+
+Develop and version-control under `/home/craign` as normal, and register/deploy via the
+daemon API above — no need to live in `/home/arduino`. To give `craign` the *actual*
+hardware/runtime capability the `arduino` user has (independent of the cosmetic UID gate),
+add it to the same groups:
+
+```
+sudo usermod -aG docker,dialout,gpiod,video,audio,render,input,netdev,bluetooth,adm craign
+```
+
+- `docker` → run/inspect the app containers directly (⚠ docker group ≈ root-equivalent).
+- `dialout` → serial link to the MCU; `gpiod` → board GPIO lines.
+- Re-login (or `newgrp`) after changing groups. `craign` currently has only `sudo,users`.
 
 ## Environment gotchas
 

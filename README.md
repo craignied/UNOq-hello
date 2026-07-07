@@ -53,6 +53,10 @@ own user beside it for Claude Code and your work.
 
 Still SSH'd in as `arduino`:
 
+> **`craign` is my username** — it appears throughout this repo (setup commands, `run.sh`
+> paths, `CLAUDE.md`). If you're following along, substitute your own username wherever you
+> see `craign`.
+
 ```bash
 sudo adduser craign
 sudo usermod -aG sudo craign

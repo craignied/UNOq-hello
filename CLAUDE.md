@@ -1,201 +1,126 @@
-# CLAUDE.md — Arduino UNO Q (this board)
+# CLAUDE.md — Arduino UNO Q
 
-## What this machine actually is
+Reference for building and running projects on this board. The workflow that works is:
+**develop as `craign` in a git repo, deploy with `./run.sh` (the daemon HTTP API).**
 
-This is **not** a classic AVR/microcontroller Arduino. It is an **Arduino UNO Q**, a
-hybrid board with two compute domains on one PCB:
+## The board
 
-- **MPU (Linux side):** Qualcomm **Dragonwing QRB2210**, quad-core ARM Cortex-A53
-  (`aarch64`), running **Debian 13 (trixie)**. This is what you get a shell on. The
-  board reports `Arduino UnoQ` in `/proc/device-tree/model`; hostname is `babyQ`.
-- **MCU (real-time side):** an **STM32U585** (Cortex-M33) that runs an Arduino sketch.
-  Its Arduino core is **Zephyr-based**, not AVR — sketches can `#include <zephyr/kernel.h>`
-  and use `K_MUTEX_DEFINE`, etc. (`arduino:zephyr` platform).
+Not a classic Arduino — a hybrid with two compute domains on one PCB:
 
-The two halves talk over the **Router Bridge**. You write an "Arduino App" that has a
-Python program (runs on Linux) and, optionally, a sketch (runs on the MCU); they RPC to
-each other across the Bridge.
+- **MPU (Linux side):** Qualcomm Dragonwing **QRB2210**, quad-core ARM Cortex-A53
+  (`aarch64`), running **Debian 13**. You get a shell here (`babyQ`); an app's Python runs
+  here.
+- **MCU (real-time side):** **STM32U585** (Cortex-M33) running a **Zephyr**-based Arduino
+  sketch (`arduino:zephyr` platform). Drives the hardware (LED matrix, GPIO, …).
 
-## The "special Python"
+The two halves talk over the **Router Bridge**.
 
-The board ships an Arduino Python SDK used inside apps. You will **not** find it in the
-host `pip`/dist-packages — apps run in **Docker** containers (Docker is installed and
-active), and the SDK lives in those images. Key imports:
+## What an "app" is
 
-- `from arduino.app_utils import App, Bridge, Frame, FrameDesigner, Logger`
-  - `App.run()` / `App.run(user_loop=fn)` — app entrypoint / main loop.
-  - `Bridge.call(name, *args)` — synchronous RPC to a sketch provider.
-  - `Bridge.notify(name, *args)` — fire-and-forget RPC (used to stream frames).
-  - `Frame` / `FrameDesigner` — helpers for LED-matrix pixel frames (see below).
-  - `Logger("name")` — structured logging.
-- `from arduino.app_bricks.<brick> import ...` — reusable "Bricks" (e.g. `web_ui.WebUI`,
-  `dbstorage_sqlstore`, plus many Edge-AI bricks). `WebUI` serves on **port 7000** by
-  default and can `expose_api('GET'|'POST', path, handler)`.
-
-On the sketch side the matching header is `#include <Arduino_RouterBridge.h>`, with
-`Bridge.begin()`, `Bridge.provide("name", fn)` to register callable providers.
-
-## Why there's Docker on this board
-
-App Lab runs each app's **Linux-side code, and every reusable "Brick", as Docker
-containers**, orchestrated with docker-compose (see the `brick_compose.yaml` files under
-`/var/lib/arduino-app-cli/assets/<ver>/compose/`). Docker is doing the heavy lifting for
-the Linux half of the system:
-
-- **Isolation & reproducibility** — each app/brick gets its own pinned environment
-  (Python + native deps) without polluting Debian or colliding with other apps. This is
-  exactly why the `arduino.app_utils` / `arduino.app_bricks` Python SDK is **not** on the
-  host `pip`: it lives *inside* those images.
-- **Heavy prebuilt stacks on demand** — Bricks like image classification, object
-  detection, ASR/TTS (whisper, piper), LLMs, and Streamlit UIs ship as prebuilt images
-  pulled from `ghcr.io/arduino/app-bricks/…`. You *compose* an app from bricks instead of
-  hand-installing gigabytes of ML dependencies on the board. Compose files declare ports,
-  volumes, and healthchecks.
-- **Lifecycle management** — the `arduino-app-cli daemon` drives the Docker API to
-  start/stop/health-check these containers. That's why the daemon (arduino user) is in the
-  `docker` group, and why `craign` needs `docker` too to touch app containers directly.
-
-Note the **MCU sketch is not containerized** — it's cross-compiled for Zephyr and flashed
-to the STM32. Docker is purely the Linux-side app/runtime layer.
-
-## App layout (the unit you build and run)
+An app is a folder with a Linux half and (optionally) an MCU half:
 
 ```
-<app>/
-  app.yaml            # name, icon, description, list of `bricks:` used
-  python/main.py      # runs on the Linux (MPU) side; entrypoint is App.run(...)
-  sketch/sketch.ino   # runs on the MCU (optional; omit for Python-only apps)
-  sketch/sketch.yaml  # profiles -> platform: arduino:zephyr
+app.yaml            # name, icon, description, optional `bricks:` list
+python/main.py      # runs on Linux; entrypoint is App.run(...)
+sketch/sketch.ino   # runs on the MCU (optional for Python-only apps)
+sketch/sketch.yaml  # profiles -> platform: arduino:zephyr
 ```
 
-Minimal pattern (from the `blink` example):
+**The Bridge** connects them:
+- Sketch: `#include <Arduino_RouterBridge.h>`, then `Bridge.begin();` and
+  `Bridge.provide("name", fn);` to expose callable providers.
+- Python: `from arduino.app_utils import App, Bridge, Logger` (and `Frame`,
+  `FrameDesigner`), then `Bridge.call("name", args)` (sync) or `Bridge.notify(...)`
+  (fire-and-forget). Entrypoint: `App.run()` or `App.run(user_loop=fn)`.
 
-```python
-# python/main.py
-from arduino.app_utils import *
-import time
-def loop():
-    time.sleep(1)
-    Bridge.call("set_led_state", True)
-App.run(user_loop=loop)
-```
-```cpp
-// sketch/sketch.ino
-#include "Arduino_RouterBridge.h"
-void setup() { pinMode(LED_BUILTIN, OUTPUT); Bridge.begin(); Bridge.provide("set_led_state", set_led_state); }
-void loop() {}
-void set_led_state(bool on) { digitalWrite(LED_BUILTIN, on ? LOW : HIGH); } // LOW = ON
-```
+Keep sketches thin (hardware I/O as providers); put logic in Python so you can iterate
+without recompiling/reflashing.
+
+## Running / deploying (as `craign` — the method that works)
+
+Everything is driven by the **app daemon**: `arduino-app-cli daemon --port 8800` (systemd
+`arduino-app-cli.service`), running as the `arduino` user with Docker + access to
+`arduino-router` (which owns the MCU serial link `/dev/ttyHS1`). It listens on
+`http://127.0.0.1:8800` and its API is reachable by **any local user** — so you deploy as
+`craign` without ever being the `arduino` user.
+
+**Use `./run.sh`** in the app folder (`./run.sh` to build+flash+run, `./run.sh stop` to
+stop). It wraps these daemon calls:
+
+- `GET  /v1/apps` — list; each `id` is `base64("<namespace>:<slug>")` (no `=` padding).
+  Namespaces: `examples`, `user`, `local`.
+- `GET  /v1/apps/{id}` — details incl. `status` and on-disk `path`.
+- `POST /v1/apps/import?namespace=user&overwrite=true` — multipart form field
+  **`file=@app.zip`**. Returns `{"id": ...}`. **The slug comes from the zip filename**, so
+  name the zip deterministically (run.sh uses the folder name). The daemon copies the app
+  into its own workspace and builds there → no permission hacks, no manual copying.
+- `POST /v1/apps/{id}/start` — SSE stream of build/flash/run progress. The **id is a path
+  segment** (not a query param). The app **persists after the stream closes** (it's a
+  docker container); you only need the stream open during the build.
+- `POST /v1/apps/{id}/stop` — stop. `DELETE /v1/apps/{id}` — remove.
+- `GET  /v1/apps/{id}/logs` — SSE of the Python app's logs (or `docker logs <app>-main-1`).
+
+Avoid the `arduino-app-cli` **CLI** for running: it's locked to the `arduino` user (UID
+1000) and its `app start <path>` builds *in place* (needs a writable app dir). The daemon
+API sidesteps both.
+
+### `~/ArduinoApps`
+
+Default per-user Arduino Apps workspace dir. **Empty and unused** with the daemon-API flow.
+The daemon keeps its own built copy of imported apps under the `arduino` user, e.g.
+`/home/arduino/ArduinoApps/<slug>/`. Safe to ignore.
 
 ## Onboard LED matrix
 
-Driven on the **MCU** via `#include <Arduino_LED_Matrix.h>` (`Arduino_LED_Matrix matrix;`),
-and controlled from Python by shipping pixel frames over the Bridge. Details taken from
-the canonical `led-matrix-painter` example:
+- **13 wide × 8 tall**, grayscale **3-bit** (per-pixel brightness `0..7`).
+- Sketch: `#include <Arduino_LED_Matrix.h>`, `matrix.begin()`,
+  `matrix.setGrayscaleBits(3)`, then `matrix.draw(buf)` where `buf` is 104 row-major
+  brightness bytes.
+- Python pushes a frame with `Bridge.call("draw", frame_bytes)` where `frame_bytes` is a
+  `bytes` of length 104 (row-major, values 0–7). See `python/main.py` for the scroll
+  approach; the board's `led-matrix-painter` example also shows animation buffering.
 
-- Grid is **8 rows** high; the painter app uses a **13×8** pixel grid (`height=8, width=13`).
-- Grayscale: sketch calls `matrix.setGrayscaleBits(3)` → per-pixel brightness **0..7**
-  (8 levels). `BRIGHTNESS_LEVELS = 8` on the Python side.
-- **Live draw:** Python sends a flat, row-major byte buffer (one byte per pixel, values
-  0..7) via `Bridge.call("draw", frame_bytes)`; the sketch provider does `matrix.draw(frame.data())`.
-- **Animations:** each frame is packed as **4× uint32 (128 bits, 1 bit/pixel on/off) +
-  duration_ms**. Python streams frames with `Bridge.notify("load_frame", [w0,w1,w2,w3,ms])`
-  then `Bridge.call("play_animation")`; the sketch buffers up to `MAX_FRAMES = 300` and
-  plays them on a timer. Note the sketch reverses the bit order of each word before display.
-- `Frame` / `FrameDesigner` (in `arduino.app_utils`) build/transform frames;
-  `Frame.to_board_bytes()` produces the row-major byte buffer for `draw`.
+## Why there's Docker
 
-**For scrolling "HELLO WORLD":** render text into a wide pixel bitmap in Python, then either
-(a) stream horizontal slices as animation frames via `load_frame`/`play_animation`, or
-(b) push each shifted 13×8 window with `Bridge.call("draw", ...)` on a timer in `user_loop`.
-Study `/var/lib/arduino-app-cli/examples/led-matrix-painter/` (`sketch/sketch.ino` +
-`python/main.py`) as the reference implementation.
+App Lab / the daemon run each app's **Linux-side code, and every reusable "Brick", as
+Docker containers**, orchestrated with docker-compose (see
+`/var/lib/arduino-app-cli/assets/<ver>/compose/`):
 
-## Running / building apps
+- **Isolation & reproducibility** — each app gets its own pinned environment. This is why
+  the `arduino.app_utils` / `arduino.app_bricks` Python SDK is **not** on the host `pip`;
+  it lives inside the image.
+- **Heavy stacks on demand** — Bricks (image classification, object detection, ASR/TTS,
+  LLMs, Streamlit UIs) ship as prebuilt images from `ghcr.io/arduino/app-bricks/…`; you
+  compose an app from bricks instead of hand-installing dependencies.
+- **Lifecycle** — the daemon drives the Docker API to start/stop/health-check containers.
 
-- **`arduino-app-cli`** manages apps but **must run as user `arduino` (UID 1000)** — it
-  refuses to run as any other user (including `craign`) or as root. The binary is a
-  *statically linked* Go executable, so the `getuid()==1000` check can't be shimmed with
-  `LD_PRELOAD` and there's no env override. Treat the **command** as single-seat.
-- **App Lab** (`app-lab`) is a desktop GUI (Wails); it needs a graphical session (fails
-  with "failed to init GTK" over a plain SSH shell). Also reachable as a web UI.
-- **`arduino-cli`** (v1.5.1) builds/uploads sketches; the MCU core is `arduino:zephyr`
-  (installed under `/home/arduino/.arduino15/packages/arduino/hardware/zephyr/`).
-- Web UIs from the `web_ui` brick are served at `http://<board-ip>:7000`.
+The **MCU sketch is not containerized** — it's cross-compiled for Zephyr and flashed to the
+STM32. Docker is purely the Linux-side app runtime.
 
-### The real interface is the daemon, not the CLI (works as any local user)
+## Python SDK & Bricks
 
-The CLI is just a thin client. All privileged work is done by **`arduino-app-cli daemon
---port 8800`** (systemd unit `arduino-app-cli.service`, running as `User=1000`/arduino,
-with docker + access to `arduino-router` which owns the MCU serial link `/dev/ttyHS1`).
-It listens on **`http://127.0.0.1:8800`** and its HTTP API is reachable by **any local
-user** — the UID check lives only on the client, not the daemon. So you do **not** have to
-*be* `arduino` to drive the board. Verified endpoints (as `craign`):
+- `arduino.app_utils`: `App`, `Bridge`, `Frame`, `FrameDesigner`, `Logger`.
+- `arduino.app_bricks.*`: reusable services, e.g. `web_ui.WebUI` (serves on port **7000**,
+  `expose_api('GET'|'POST', path, handler)`), `dbstorage_sqlstore`, and many Edge-AI
+  bricks. Declare them in `app.yaml` under `bricks:`.
+- API docs on the board: `/var/lib/arduino-app-cli/assets/<ver>/api-docs/arduino/`.
+- Example apps: `/var/lib/arduino-app-cli/examples/` (`blink`, `led-matrix-painter`,
+  `color-your-leds`, …).
 
-- `GET  /v1/version` → `{"version":"0.11.1"}`
-- `GET  /v1/apps` → JSON list; each `id` is `base64("<namespace>:<name>")`, namespaces
-  seen: `examples:`, `user:`, `local:`.
-- `GET  /v1/apps/events` → SSE stream of app state (`event: app` + JSON per app).
-- `POST /v1/apps/import?namespace=user&overwrite=true` with multipart form field
-  **`file=@app.zip`** → imports an app (returns `{"id": "..."}`, HTTP 201). **This is how
-  this repo's app got registered as `user:hello-app` — done entirely as `craign`.** After
-  import it also shows up in App Lab.
-- Lifecycle verbs `run`/`build`/`install`/`stop` are `GET /v1/apps/<verb>?id=<id>`
-  (streaming). NOTE: the exact accepted form of the `id` param for these was not yet
-  cracked — passing the stored base64 id returns `412 {"details":"invalid id"}`. TODO if
-  you want fully headless run: capture what App Lab / the arduino-user CLI actually sends
-  (e.g. tcpdump on loopback :8800, or strace the CLI as arduino).
+## Environment
 
-**Easiest way to actually run this app today:** open **App Lab**, pick **"Hello World
-Scroll"** (already imported), hit Run. CLI fallback: `su - arduino` then
-`arduino-app-cli run ...`.
+- Develop as **`craign`** under `/home/craign`, git-tracked. `craign` is in the board
+  groups needed for full capability: `docker, dialout, gpiod, video, audio, render, input,
+  netdev, bluetooth, adm`. (To provision another user:
+  `sudo usermod -aG docker,dialout,gpiod,video,audio,render,input,netdev,bluetooth,adm <user>`,
+  then re-login. ⚠ `docker` group ≈ root-equivalent.)
+- **git/GitHub:** `gh` is authenticated over HTTPS as `craignied` and set as git's
+  credential helper — `git push`/`pull` and `gh …` work non-interactively.
+- Board tooling: `arduino-app-cli` (daemon + arduino-only CLI), `arduino-cli`,
+  `app-lab` (desktop GUI; needs a graphical session), `arduino-router`.
 
-### Using your own user (`craign`) for board projects
+## Make a new project (recipe)
 
-Develop and version-control under `/home/craign` as normal, and register/deploy via the
-daemon API above — no need to live in `/home/arduino`. To give `craign` the *actual*
-hardware/runtime capability the `arduino` user has (independent of the cosmetic UID gate),
-add it to the same groups:
-
-```
-sudo usermod -aG docker,dialout,gpiod,video,audio,render,input,netdev,bluetooth,adm craign
-```
-
-- `docker` → run/inspect the app containers directly (⚠ docker group ≈ root-equivalent).
-- `dialout` → serial link to the MCU; `gpiod` → board GPIO lines.
-- Re-login (or `newgrp`) after changing groups. `craign` currently has only `sudo,users`.
-
-## Environment gotchas
-
-- The current shell user is **`craign`** (uid 1002), *not* `arduino`. `sudo` here requires
-  a password (no passwordless sudo). `/home/arduino/**` and
-  `/home/arduino/.arduino15/**` are **not readable** to `craign`.
-- Canonical, readable references (no permissions needed):
-  - Examples: **`/var/lib/arduino-app-cli/examples/`** — see `blink`, `color-your-leds`,
-    and **`led-matrix-painter`**.
-  - Python API docs: **`/var/lib/arduino-app-cli/assets/<ver>/api-docs/arduino/`**
-    (`app_bricks/*`, `app_peripherals/*`).
-  - Brick catalog: `/var/lib/arduino-app-cli/assets/<ver>/bricks-list.yaml`.
-- Board tooling on PATH: `arduino-app-cli`, `arduino-cli`, `app-lab`, `arduino-router`,
-  `arduino-router-cli`, `arduino-linux-config`.
-- The onboard RGB LEDs are split across domains: LEDs #1/#2 on the Qualcomm MPU, LEDs
-  #3/#4 on the STM32 MCU (see `color-your-leds`). udev rule:
-  `/etc/udev/rules.d/30-builtin-leds.rules`.
-
-## Git / GitHub workflow
-
-`gh` (GitHub CLI) is installed and authenticated for user `craignied` over **HTTPS**, and
-is registered as git's credential helper. So git and `gh` commands work non-interactively
-from a normal shell here (including from inside Claude Code) — **no** SSH keys and **no**
-token pasting needed.
-
-- Remote: `origin` → `https://github.com/craignied/UNOq-hello.git`. Default branch `main`.
-- Push / pull just work: `git push`, `git pull`, `git push -u origin <branch>`.
-- Use `gh` for GitHub-side operations, e.g. `gh repo view`, `gh pr create`,
-  `gh repo create` (only if the remote repo doesn't exist yet — `git push` won't create it).
-- Auth lives in `~/.config/gh/hosts.yml`; check it with `gh auth status`.
-
-## This repo
-
-Working dir `/home/craign/hello` — holds `CLAUDE.md` and `README.md`. Goal: an app that
-scrolls **"HELLO WORLD"** across the onboard LED matrix (see the LED-matrix section above).
+1. Copy this repo's shape into a new folder (the folder name becomes the app slug).
+2. Edit `app.yaml`; write your `sketch/sketch.ino` providers and `python/main.py` logic.
+3. `./run.sh` — import + build + flash + run, all as your own user.

@@ -1,6 +1,9 @@
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
 
+# Arduino App build cache (created only if you build in-place)
+.cache/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -21,13 +21,26 @@ them to the MCU over the Bridge, which calls `Arduino_LED_Matrix::draw()`.
 
 ## Project layout
 
+This repo *is* an Arduino App:
+
 ```
-CLAUDE.md   # detailed board/architecture notes and gotchas
-README.md   # this file
+app.yaml            # app name / icon / description
+python/main.py      # runs on the Linux (MPU) side: renders + scrolls the text
+sketch/sketch.ino   # runs on the MCU: exposes a "draw" Bridge provider
+sketch/sketch.yaml  # targets the arduino:zephyr platform
+CLAUDE.md           # detailed board/architecture notes and gotchas
+README.md           # this file
 ```
 
-The scrolling-text app (`app.yaml`, `python/main.py`, `sketch/sketch.ino`) will be
-added here.
+## How it works
+
+- **`sketch/sketch.ino`** (MCU) keeps it minimal: it registers one Router Bridge
+  provider, `draw`, which takes a full frame — a row-major buffer of 13×8 = 104
+  brightness bytes (0–7) — and hands it to `Arduino_LED_Matrix::draw()`.
+- **`python/main.py`** (Linux) renders `"HELLO WORLD"` into a wide 1-bit bitmap using a
+  built-in 5×7 font, then scrolls it by pushing one 13-wide window per tick via
+  `Bridge.call("draw", frame_bytes)`. Tweak `SCROLL_MS` for speed and `MESSAGE` for the
+  text (add glyphs to `FONT` for any new letters).
 
 ## Building & running
 
@@ -37,4 +50,5 @@ toolchain notes, the Python SDK (`arduino.app_utils` / `arduino.app_bricks`), th
 matrix API, and environment caveats.
 
 Reference examples live on the board under
-`/var/lib/arduino-app-cli/examples/` — see `blink` and `led-matrix-painter`.
+`/var/lib/arduino-app-cli/examples/` — this app is modeled on `blink` (Bridge basics)
+and `led-matrix-painter` (the LED matrix `draw` provider).

@@ -5,6 +5,120 @@ hello-world that exercises every layer of this board's unusual stack (Linux ↔ 
 the LED matrix, the containerized app runtime) and doubles as a **working template** for
 building your own UNO Q projects as your normal user.
 
+> **Setting up a UNO Q from scratch?** Jump to
+> [First-time board setup (soup to nuts)](#first-time-board-setup-soup-to-nuts) — unbox →
+> App Lab → SSH → your own user → Claude Code, in order, exactly what worked on this board.
+
+## First-time board setup (soup to nuts)
+
+Everything below is one-time. The clean path uses **App Lab** *only* for first-boot
+provisioning (it configures Wi-Fi and SSH for you), then you drop to SSH and never touch the
+GUI again. This board is plain **Debian 13 (trixie), `aarch64`, ~3.6 GB RAM** — so keep it
+**headless** (don't launch the UNO Q desktop) to leave RAM for actual builds.
+
+### Phase 1 — Physical + App Lab provisioning (Mac, one time)
+
+1. On your Mac (macOS 11+), download **App Lab** from Arduino's site and drag it to
+   Applications.
+2. Connect the UNO Q **directly** to the Mac with a **data-rated USB-C cable** — *not*
+   through a hub. Apple USB-C hubs are explicitly incompatible and third-party hubs are
+   flaky for first contact.
+3. It powers on the instant it gets power (no button). Watch the LED matrix: a **swirling
+   Arduino-logo** animation = booting; a **heartbeat/pulse** = ready (~30–60 s).
+4. Open App Lab; it finds the board over USB (can take up to 60 s). Select it.
+5. First-run wizard: set your **Linux account password**, name the board, pick your **Wi-Fi
+   network** and enter its password. This is the important bit — App Lab configures Wi-Fi and
+   sets up SSH for you.
+6. Let it pull first-connect updates; restart App Lab if prompted. **After this you're done
+   with the GUI.**
+
+### Phase 2 — Get on the board headless (SSH)
+
+Grab the board's IP (shown in App Lab) or use its mDNS hostname. From Mac Terminal:
+
+```bash
+ssh arduino@<board-ip>          # or ssh arduino@<boardname>.local
+```
+
+Password is what you set in the wizard (fresh-image default is `arduino`). Optionally
+`ssh-copy-id arduino@<board-ip>` to skip the password next time.
+
+### Phase 3 — Add your own user (don't fight the `arduino` default)
+
+App Lab provisions the board around an `arduino` account and wires its tooling to it (apps
+live under `/home/arduino/…`, SSH/provisioning target that user). That's a **board-image
+convention, not a lock** — underneath it's plain Debian with full root. So don't fight it:
+leave `arduino` alone as the "Arduino system" account (so App Lab keeps working) and add your
+own user beside it for Claude Code and your work.
+
+Still SSH'd in as `arduino`:
+
+```bash
+sudo adduser craign
+sudo usermod -aG sudo craign
+```
+
+Then give that user **full board capability** — the groups the Arduino stack needs for
+Docker, the MCU serial link, GPIO, video/audio, etc. (⚠ `docker` ≈ root-equivalent):
+
+```bash
+sudo usermod -aG docker,dialout,gpiod,video,audio,render,input,netdev,bluetooth,adm craign
+```
+
+From your Mac, drop your key on the new account, then live there:
+
+```bash
+ssh-copy-id craign@<board-ip>
+ssh craign@<board-ip>           # log in as yourself from now on
+```
+
+Log out and back in (or reboot) so the new group memberships take effect.
+
+### Phase 4 — Install Claude Code (as `craign`)
+
+Freshen the OS, then run the native installer — it bundles its own runtime (no Node to
+wrangle) and self-updates:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+The installer drops `claude` in `~/.local/bin`. **Make sure that's on your PATH** — and that
+it's *your* home, not the `arduino` user's (that exact mixup cost time here):
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+claude --version    # confirm it resolves to /home/craign/.local/bin/claude
+```
+
+Start it in whatever project dir you want:
+
+```bash
+claude
+```
+
+On first launch it prints a login URL. Since you're SSH'd in, open that URL in your **Mac's**
+browser, approve, and paste the code back into the terminal.
+
+> **Notes.** Claude Code needs a paid plan (Pro/Max/Team/Enterprise or API/Console) — the
+> free tier doesn't include it. The `apt` route is a legit alternative to the curl script
+> (Anthropic publishes a signed apt repo that rides your normal `apt upgrade`); the native
+> installer is one line and self-updating, so start there.
+
+### Phase 5 — You're in
+
+You're now `craign` on the Linux side with Claude Code, Docker, and MCU access. Clone this
+repo and go:
+
+```bash
+git clone https://github.com/craignied/UNOq-hello.git
+cd UNOq-hello
+./run.sh
+```
+
+That builds, flashes the MCU, and scrolls HELLO WORLD. Continue with [Run it](#run-it) below.
+
 ## Run it
 
 From this directory, as your normal user (`craign`):

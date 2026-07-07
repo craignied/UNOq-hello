@@ -36,6 +36,33 @@ sketch/sketch.yaml  # profiles -> platform: arduino:zephyr
 Keep sketches thin (hardware I/O as providers); put logic in Python so you can iterate
 without recompiling/reflashing.
 
+## Bootstrapping a fresh board (one time)
+
+Full step-by-step (with the App Lab screens) lives in the **README**
+(*First-time board setup — soup to nuts*). The short version and the gotchas:
+
+1. **App Lab, once, for provisioning only.** On a Mac, connect the board **directly** by a
+   data-rated USB-C cable (hubs are incompatible/flaky for first contact). App Lab's wizard
+   sets the Linux password, Wi-Fi, and SSH. After that, never open the GUI again — everything
+   is SSH.
+2. **SSH in** as `arduino@<board-ip>` (or `<name>.local`); fresh-image password is `arduino`.
+3. **Add your own user; don't fight the `arduino` default.** App Lab wires its tooling to the
+   `arduino` account (apps under `/home/arduino/…`), but it's plain Debian with full root —
+   the `arduino` requirement is a convention, not a lock. Leave `arduino` as the "Arduino
+   system" account and add yourself beside it:
+   `sudo adduser craign && sudo usermod -aG sudo craign`, then the capability groups
+   `sudo usermod -aG docker,dialout,gpiod,video,audio,render,input,netdev,bluetooth,adm craign`
+   (⚠ `docker` ≈ root). Re-login for groups to apply.
+4. **Claude Code, as `craign`:** `sudo apt update && sudo apt upgrade -y`, then
+   `curl -fsSL https://claude.ai/install.sh | bash` (native installer, bundles its runtime,
+   self-updates). It lands in `~/.local/bin` — put **that** on PATH, and make sure it's
+   *your* home not `/home/arduino/.local/bin` (that mixup bit us):
+   `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc`. Launch
+   `claude`, open the printed login URL in the Mac browser, paste the code back. Needs a paid
+   plan; `apt` (signed Anthropic repo) is the alternative to the curl installer.
+5. Keep it **headless** — the board has ~3.6 GB RAM; don't run the UNO Q desktop alongside
+   builds.
+
 ## Running / deploying (as `craign` — the method that works)
 
 Everything is driven by the **app daemon**: `arduino-app-cli daemon --port 8800` (systemd
